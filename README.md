@@ -35,7 +35,7 @@ KeyCracker has the following features
 5. You will find the executable under /target/build/
 
 ### OpenSSL
-This projects are valid install of openSSL
+Key Cracker requires a valid install of openSSL
 
 #### Linux
 On linux this should be installed by default, however if not openSSL can be instaled with `sudo apt-get install openssl`
