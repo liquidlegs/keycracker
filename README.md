@@ -32,13 +32,13 @@ KeyCracker has the following features
 3. cd into the project directory
 4. Run the following command
 `Cargo build --release`
-5. You will find the executable under /target/build/
+5. You will find the executable under `/target/build/`
 
 ### OpenSSL
 Key Cracker requires a valid install of openSSL
 
 #### Linux
-On linux this should be installed by default, however if not openSSL can be instaled with `sudo apt-get install openssl`
+On linux this should be installed by default, however if not openSSL can be installed with `sudo apt-get install openssl`
 
 #### Windows
 Read the following guide [here](https://thesecmaster.com/procedure-to-install-openssl-on-the-windows-platform/)
