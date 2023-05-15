@@ -27,12 +27,12 @@ KeyCracker has the following features
   - AES 256 CBC/CTR
 
 ## Installation Requirements
-Download and install rustup https://www.rust-lang.org/
-Add the cargo to your path
-cd into the project directory
-Run the following command
+1. Download and install rustup https://www.rust-lang.org/
+2. Add the cargo to your path
+3. cd into the project directory
+4. Run the following command
 `Cargo build --release`
-You will find the executable under /target/build/
+5. You will find the executable under /target/build/
 
 ## OpenSSL
 This projects are valid install of openSSL
