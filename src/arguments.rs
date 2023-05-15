@@ -24,7 +24,7 @@ pub struct Arguments {
   /// The password list.
   pub pwr_wordlist: String,
 
-  /// File to write the private keys
+  /// File to write the private keys [TODO]
   #[clap(short, long)]
   pub output: Option<String>,
 
@@ -33,8 +33,16 @@ pub struct Arguments {
   pub key_type: Option<ArgKeyType>,
 
   #[clap(long, default_value_if("debug", Some("false"), Some("true")), min_values(0))]
-  /// Debug messages
-  pub debug: Option<bool>,
+  /// Debug messages [TODO]
+  pub debug: bool,
+
+  #[clap(long, default_value_if("error", Some("false"), Some("true")), min_values(0))]
+  /// Error messages [TODO]
+  pub error: bool,
+
+  #[clap(long, default_value_if("no_plantext_passwords", Some("false"), Some("true")), min_values(0))]
+  /// Do not authenticate with plaintext password [TODO].
+  pub no_plantext_passwords: bool,
 
   #[clap(short, long)]
   /// The number of thread.
@@ -50,6 +58,10 @@ pub struct Arguments {
 }
 
 impl Arguments {
+
+  pub fn dprint(msg: String) -> () {
+    println!("{} {}", style("Debug =>").red().bright(), style(msg).cyan());
+  }
 
   // Get the name of the file without the full / relative path.
   #[allow(dead_code)]
@@ -71,7 +83,7 @@ impl Arguments {
   #[allow(dead_code)]
   // Works out whether each line uses \r\n or \n.
   pub fn get_line_ending(file_contents: String) -> LineEndings {
-    let mut out = LineEndings::CRLR;
+    let mut out = LineEndings::CRLF;
     
     let mut content: Vec<&str> = file_contents.split(LF).collect();
     if content.len() > 1 {
@@ -80,7 +92,7 @@ impl Arguments {
 
     content = file_contents.split(CRLF).collect();
     if content.len() > 1 {
-      out = LineEndings::CRLR;
+      out = LineEndings::CRLF;
     }
 
     out
@@ -114,7 +126,8 @@ impl Arguments {
     let mut threads: u64 = 1;
     let mut cipher = Cipher::Aes256_Ctr;
     let mut algo = KeyType::RSA;
-    let mut ip = self.ip_port.clone();
+    let ip = self.ip_port.clone();
+    let dbg = self.debug.clone();
 
     let user_filename = Self::get_file_name(self.usr_wordlist.clone());
     let pass_filename = Self::get_file_name(self.pwr_wordlist.clone());
@@ -146,6 +159,12 @@ impl Arguments {
 
     if let Some(k) = self.key_type.clone() {
       algo = Self::get_key_type(k);
+    }
+
+    if dbg == true {
+      Self::dprint(format!("user_filename: {user_filename}, LineEnding: {:#?}", usr_ln)); 
+      Self::dprint(format!("pass_filename: {pass_filename}, LineEnding: {:#?}", pwr_ln));
+      Self::dprint(format!("bits: {bits} threads: {threads} cipher: {:#?} algorithim: {:#?}, ip:port: {ip}", cipher, algo));
     }
 
     if threads < 2 {
@@ -229,9 +248,11 @@ impl Arguments {
       let thread_chunk_sz = items/threads as usize;
       let remainder = items as f64 % threads as f64;
       let mut handles: Vec<JoinHandle<()>> = Default::default();
-
-      println!("items: {}\nthread_chunk_size: {}\nremainder: {}\n {threads}",
-      style(items).cyan(), style(thread_chunk_sz).cyan(), style(remainder).cyan());
+      
+      if dbg.clone() == true {
+        println!("items: {}\nthread_chunk_size: {}\nremainder: {}\n {threads}",
+        style(items).cyan(), style(thread_chunk_sz).cyan(), style(remainder).cyan());
+      }
     
       // Sets up the channel receiver and senders to send and receives message between threads.
       let (tx_msg_in, rx_msg_in) = unbounded::<ThreadMessage>();
@@ -255,7 +276,8 @@ impl Arguments {
 
         if ch_counter+1 > thread_chunk_sz {
           let c_data = th_data_ch.clone();
-          
+          let cdbg = dbg.clone();
+
           // Brute force private key login.
           // Call thread function and userpass chunk to thread.
           handles.push(thread::spawn(move || {
@@ -266,7 +288,10 @@ impl Arguments {
             let th_out_s = th_out_sender.clone();
             let th_data_chk = c_data.len();
             let th_ip = cip.clone();
-            println!("thread_chunk {th_data_chk}\nthread_chk_data: {:?}", c_data);
+
+            if cdbg == true {
+              println!("{} thread_chunk {th_data_chk}\nthread_chk_data: {:?}", style("Debug =>").red().bright(), c_data);
+            }
 
             // Brute force the login and retrive the private key.
             if let Some(buffer) = Self::thread_populate_buffer(th_msg_s_i.clone(), th_msg_r_o.clone(), c_data, &th_key_info) {
@@ -317,6 +342,7 @@ impl Arguments {
         let crx_msg_in = rx_msg_in.clone();
         let ctx_msg_out = tx_msg_out.clone();
         let crx_out = rx_out.clone();
+        let cdbg = dbg.clone();
 
         if wait_counter >= 10 {
           break;
@@ -328,10 +354,15 @@ impl Arguments {
           
           match v {
             ThreadMessage::Data => {
-              println!("{} => Ready to receive key", style("Debug").red().bright());
+              if cdbg == true {
+                Self::dprint(format!("Ready to receive key"));
+              }
 
               if let Ok(s) = crx_out.recv() {
-                println!("{}: keydata received", style("OK").yellow().bright());
+                if cdbg == true {
+                  Self::dprint(format!("keydata received"));
+                }
+
                 out = s;
               }
 
@@ -348,7 +379,10 @@ impl Arguments {
         }
 
         else {
-          println!("wait_counter: {wait_counter}");
+          if cdbg == true {
+            Self::dprint(format!("wait_counter: {wait_counter}"));
+          }
+
           wait_counter += 1;
           thread::sleep(Duration::from_millis(500));
         }
@@ -356,7 +390,10 @@ impl Arguments {
       
       for i in handles {
         if let Ok(_) = i.join() {
-          println!("handles joined: {handle_count}");
+          if dbg == true {
+            Self::dprint(format!("handles joined: {handle_count}"));
+          }
+
           handle_count += 1;
         }
       }
@@ -381,7 +418,6 @@ impl Arguments {
     let ip = String::from(info.ip.as_str());
 
     for i in c_data {
-      println!("thread for");
       let cr_msg = r_msg.clone();
 
       if let Ok(r) = cr_msg.recv_timeout(Duration::from_millis(50)) {
@@ -519,7 +555,7 @@ pub mod types {
   #[derive(Debug, Clone)]
   pub enum LineEndings {
     LR,
-    CRLR,
+    CRLF,
   }
 
   #[derive(Debug, Clone, clap::ValueEnum)]
