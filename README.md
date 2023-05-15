@@ -34,13 +34,13 @@ KeyCracker has the following features
 `Cargo build --release`
 5. You will find the executable under /target/build/
 
-## OpenSSL
+### OpenSSL
 This projects are valid install of openSSL
 
-### Linux
+#### Linux
 On linux this should be installed by default, however if not openSSL can be instaled with `sudo apt-get install openssl`
 
-### Windows
+#### Windows
 Read the following guide [here](https://thesecmaster.com/procedure-to-install-openssl-on-the-windows-platform/)
 You will need to add the openssl installation directory to your PATH environment variable.
 You will also need to create environment variable that points to the openssl configuration file like the following `OPENSSL_CONF=C:\Program Files\OpenSSL-Win64\bin\openssl.cfg`
