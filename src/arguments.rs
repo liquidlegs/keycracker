@@ -4,9 +4,14 @@ use ssh_rs::ssh;
 use console::style;
 use types::*;
 use crossbeam::channel::{Sender, Receiver, unbounded};
+use chrono::Utc;
 use std::{
   thread,
   thread::JoinHandle, time::Duration,
+  path::Path,
+  io::Write,
+  fs::{OpenOptions, File},
+  io::ErrorKind,
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -41,15 +46,15 @@ pub struct Arguments {
   pub error: bool,
 
   #[clap(long, default_value_if("no_plantext_passwords", Some("false"), Some("true")), min_values(0))]
-  /// Do not authenticate with plaintext password [TODO].
+  /// Do not authenticate with plaintext passwords [TODO].
   pub no_plantext_passwords: bool,
 
   #[clap(short, long)]
-  /// The number of thread.
+  /// The number of threads.
   pub threads: Option<u64>,
 
   #[clap(short, long, value_enum)]
-  /// The cupher to encrypt the key.
+  /// The cipher to encrypt the private key.
   pub cipher: Option<ArgCipher>,
 
   #[clap(short, long)]
@@ -206,7 +211,7 @@ impl Arguments {
               out.algorithim = format!("{:#?}", algo);
               out.bits = bits;
               out.cipher = format!("{:#?}", cipher);
-              out.time = String::from("None for now");
+              out.time = String::from(Self::get_timedate());
               out.usr_wordlist = user_filename;
               out.pwr_wordlist = pass_filename;
               out.ip = ip.clone();
@@ -302,7 +307,7 @@ impl Arguments {
                 ip: th_ip,
                 pwr_wordlist: cpwr_filename,
                 usr_wordlist: cusr_filename,
-                time: String::from("None for now"),
+                time: String::from(Self::get_timedate()),
                 data: buffer,
               };
 
@@ -333,6 +338,11 @@ impl Arguments {
 
         ch_counter += 1;
       }
+
+      //===================================
+      // Code to fix bug for remainder input not submitted to ssh server will go here.
+      // TODO
+      //===================================
 
       let mut handle_count: usize = 1;
       std::thread::sleep(Duration::from_millis(500));
@@ -468,15 +478,109 @@ impl Arguments {
     None
   }
 
+  // Gets current time and date in UTC.
+  pub fn get_timedate() -> String {
+    let out = format!("{}", Utc::now())
+    .replace("-", "")
+    .replace(":", "-")
+    .replace(" ", "_")
+    .replace(".", "");
+
+    String::from(&out[0..17])
+  }
+
+    /**Function returns the full path from the present working directory
+   * Params:
+   *  nothing
+   * Returns Option<String>
+   */
+  pub fn get_current_directory() -> Option<String> {
+    if let Ok(path) = std::env::current_dir() {
+      if let Ok(s) = path.into_os_string().into_string() {
+        return Some(s)
+      }
+    }
+
+    None
+  }
+
   // Write the FileInputOutput buffer content to a json file.
   #[allow(dead_code)]
   pub fn write_output(&self, content: KeyOutput) -> () {
-    
+    let mut output = String::from("");            // Stores the json output
+    let mut filename = String::new();             // Stores the path to writ the file.
+
+    // Fill output string with json.
     match serde_json::to_string_pretty(&content) {
       Ok(s) => {
-        println!("{s}");
+        output.push_str(s.as_str());
       },
       Err(_) => {}
+    }
+
+    // Quits if the json output is empty.
+    if output.len() <= 196 {
+      println!("{}: No output", style("OK").yellow().bright());
+      return;
+    }
+
+    // Data will only be written if the output string has a name.
+    if let Some(o) = self.output.clone() {
+      filename.push_str(o.as_str());
+    }
+
+    else {
+      return;
+    }
+
+    println!("{output}");
+
+    // Format the filename depending on the OS and input.
+    match filename.as_str() {
+      "." =>  {
+        filename.clear();
+        filename.push_str(format!("{}_output.json", Self::get_timedate()).as_str());
+      }
+      
+      _ =>    {
+        if let Some(s) = Self::get_current_directory() {
+          match std::env::consts::OS {
+            "windows" =>  { filename = format!("{s}\\{filename}.json"); }
+            "linux" =>    { filename = format!("{s}/{filename}.json"); }
+            _ =>          { filename = format!("{s}/{filename}.json"); }
+          }
+        }
+      }
+    }
+
+    // Create the file if it does not exist.
+    let test_path = Path::new(&filename);
+    if test_path.exists() == false {
+      match File::create(&filename) {
+        Ok(_) => {
+          println!("{}: {} {}", style("OK").yellow().bright(), style("Successfully created").green().bright(), style(filename.clone()).cyan());
+        },
+
+        Err(e) => {
+          println!("{}: {}", style("Error").red().bright(), e.kind());
+        }
+      }
+    }
+
+    // Write the output to the file.
+    match OpenOptions::new().read(true).write(true).open(&filename) {
+      Ok(mut f) => {
+        if let Ok(file) = f.write(&output.as_bytes()) {
+          println!(
+            "{}: {} {} bytes to {}",
+            style("OK").yellow().bright(), style("Successfully wrote").green().bright(), style(filename.clone()).cyan(),
+            style(file).cyan()
+          );
+        }
+      },
+      Err(e) => {
+        println!("{}: unable to write output to file - {}", style("Error").red().bright(), style(e.kind()).cyan());
+      }
     }
   }
 
